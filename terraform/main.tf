@@ -11,48 +11,67 @@ provider "aws" {
   region = "us-east-1"
 }
 
+# --- 0. Shared Locals ---
+# We define the name here so both the Policy and Collection use it without depending on each other.
+locals {
+  collection_name = "doc-summaries"
+}
+
 # --- 1. S3 Bucket for Documents ---
 resource "aws_s3_bucket" "doc_bucket" {
   bucket_prefix = "doc-summarizer-upload-"
   force_destroy = true
 }
 
-# --- 2. OpenSearch Serverless (Vector Store) ---
-resource "aws_opensearchserverless_collection" "search_collection" {
-  name = "doc-summaries"
-  type = "SEARCH"
-}
+# --- 2. OpenSearch Serverless Policies (MUST BE CREATED FIRST) ---
 
 # Encryption Policy
 resource "aws_opensearchserverless_security_policy" "encryption" {
   name        = "doc-summaries-encryption"
   type        = "encryption"
+  
+  # WE USE local.collection_name HERE INSTEAD OF REFERENCING THE RESOURCE
   policy      = jsonencode({
     Rules = [{
       ResourceType = "collection"
-      Resource = ["collection/${aws_opensearchserverless_collection.search_collection.name}"]
+      Resource = ["collection/${local.collection_name}"]
     }]
     AWSOwnedKey = true
   })
 }
 
-# Network Policy (Allow public access for demo simplicity; restrict in prod)
+# Network Policy
 resource "aws_opensearchserverless_security_policy" "network" {
   name        = "doc-summaries-network"
   type        = "network"
+
+  # WE USE local.collection_name HERE TOO
   policy      = jsonencode([{
     Rules = [{
       ResourceType = "collection"
-      Resource = ["collection/${aws_opensearchserverless_collection.search_collection.name}"]
+      Resource = ["collection/${local.collection_name}"]
     }, {
       ResourceType = "dashboard"
-      Resource = ["collection/${aws_opensearchserverless_collection.search_collection.name}"]
+      Resource = ["collection/${local.collection_name}"]
     }]
     AllowFromPublic = true
   }])
 }
 
+# --- 3. OpenSearch Serverless Collection ---
+resource "aws_opensearchserverless_collection" "search_collection" {
+  name = local.collection_name
+  type = "SEARCH"
+
+  # EXPLICITLY WAIT FOR POLICIES TO EXIST
+  depends_on = [
+    aws_opensearchserverless_security_policy.encryption,
+    aws_opensearchserverless_security_policy.network
+  ]
+}
+
 # Data Access Policy (Grant Lambda permission to write)
+# This one SHOULD depend on the collection existing, so referencing the resource here is fine.
 resource "aws_opensearchserverless_access_policy" "data_access" {
   name        = "doc-summaries-access"
   type        = "data"
@@ -82,7 +101,7 @@ resource "aws_opensearchserverless_access_policy" "data_access" {
   }])
 }
 
-# --- 3. IAM Role for Lambda ---
+# --- 4. IAM Role for Lambda ---
 resource "aws_iam_role" "lambda_exec" {
   name = "summarizer_lambda_role"
 
@@ -123,10 +142,10 @@ resource "aws_iam_role_policy" "lambda_policy" {
   })
 }
 
-# --- 4. Lambda Function ---
+# --- 5. Lambda Function ---
 data "archive_file" "lambda_zip" {
   type        = "zip"
-  source_dir  = "../src" # Points to the src directory where pip install happened
+  source_dir  = "../src"
   output_path = "lambda_function.zip"
 }
 
@@ -146,7 +165,7 @@ resource "aws_lambda_function" "summarizer" {
   }
 }
 
-# --- 5. S3 Trigger ---
+# --- 6. S3 Trigger ---
 resource "aws_lambda_permission" "allow_s3" {
   statement_id  = "AllowExecutionFromS3"
   action        = "lambda:InvokeFunction"
