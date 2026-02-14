@@ -188,4 +188,10 @@ resource "aws_s3_bucket_notification" "bucket_notification" {
 
 output "s3_bucket_name" {
   value = aws_s3_bucket.doc_bucket.id
+resource "aws_lambda_function" "summarizer" {
+  # ... (other settings like filename, role, etc keep the same) ...
+  
+  # ADD THIS LINE:
+  reserved_concurrent_executions = 1
+}
 }
