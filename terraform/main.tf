@@ -13,6 +13,7 @@ provider "aws" {
 
 # --- 0. Shared Locals ---
 locals {
+  # If you get "Collection already exists" errors, change v3 to v4
   collection_name = "doc-summaries-v3"
 }
 
@@ -151,7 +152,7 @@ resource "aws_iam_role_policy" "lambda_policy" {
 # --- 5. Lambda Function ---
 data "archive_file" "lambda_zip" {
   type        = "zip"
-  source_dir  = "../src" # Ensure this folder exists locally!
+  source_dir  = "../src" # Ensure your python file is in a folder named 'src' one level up
   output_path = "lambda_function.zip"
 }
 
@@ -164,12 +165,12 @@ resource "aws_lambda_function" "summarizer" {
   timeout          = 60
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
   
-  # Limit concurrency to prevent Bedrock throttling or "Too Many Tokens"
-  reserved_concurrent_executions = 1
+  # FIX: Commented out to prevent "UnreservedConcurrentExecution" error
+  # reserved_concurrent_executions = 1
 
   environment {
     variables = {
-      # Pass the endpoint without the https:// prefix if your code expects it that way
+      # Pass the endpoint without the https:// prefix
       OPENSEARCH_HOST = replace(aws_opensearchserverless_collection.search_collection.collection_endpoint, "https://", "")
     }
   }
