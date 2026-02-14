@@ -1,0 +1,43 @@
+name: Deploy Summarization Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+
+permissions:
+  id-token: write # Required for OIDC
+  contents: read
+
+jobs:
+  terraform:
+    name: "Terraform Deploy"
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v3
+      with:
+        # REPLACE THIS with the actual ARN of the IAM Role you created for GitHub Actions
+        role-to-assume: arn:aws:iam::864482617582:role/GitHubActionRole
+        aws-region: us-east-1
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+
+    - name: Install Python Dependencies (for Lambda)
+      run: |
+        cd src
+        pip install opensearch-py -t .
+        # List files to verify installation
+        ls -la
+
+    - name: Terraform Init
+      run: terraform init
+      working-directory: ./terraform
+
+    - name: Terraform Apply
+      run: terraform apply -auto-approve
+      working-directory: ./terraform
