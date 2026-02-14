@@ -13,7 +13,6 @@ provider "aws" {
 
 # --- 0. Shared Locals ---
 locals {
-  # Change this to v3 or v4 if you still get "Already Exists" errors
   collection_name = "doc-summaries-v3"
 }
 
@@ -27,13 +26,13 @@ resource "aws_s3_bucket" "doc_bucket" {
 
 # Encryption Policy
 resource "aws_opensearchserverless_security_policy" "encryption" {
-  name        = "${local.collection_name}-encryption"
-  type        = "encryption"
-  
-  policy      = jsonencode({
+  name = "${local.collection_name}-encryption"
+  type = "encryption"
+
+  policy = jsonencode({
     Rules = [{
       ResourceType = "collection"
-      Resource = ["collection/${local.collection_name}"]
+      Resource     = ["collection/${local.collection_name}"]
     }]
     AWSOwnedKey = true
   })
@@ -41,16 +40,16 @@ resource "aws_opensearchserverless_security_policy" "encryption" {
 
 # Network Policy
 resource "aws_opensearchserverless_security_policy" "network" {
-  name        = "${local.collection_name}-network"
-  type        = "network"
+  name = "${local.collection_name}-network"
+  type = "network"
 
-  policy      = jsonencode([{
+  policy = jsonencode([{
     Rules = [{
       ResourceType = "collection"
-      Resource = ["collection/${local.collection_name}"]
+      Resource     = ["collection/${local.collection_name}"]
     }, {
       ResourceType = "dashboard"
-      Resource = ["collection/${local.collection_name}"]
+      Resource     = ["collection/${local.collection_name}"]
     }]
     AllowFromPublic = true
   }])
@@ -68,13 +67,15 @@ resource "aws_opensearchserverless_collection" "search_collection" {
 }
 
 # Data Access Policy
+# Defines WHAT the role can do inside the collection (Index/Read/Write)
 resource "aws_opensearchserverless_access_policy" "data_access" {
-  name        = "${local.collection_name}-access"
-  type        = "data"
-  policy      = jsonencode([{
+  name = "${local.collection_name}-access"
+  type = "data"
+  policy = jsonencode([{
     Rules = [{
       ResourceType = "collection"
-      Resource = ["collection/${aws_opensearchserverless_collection.search_collection.name}"]
+      # Using local variable to avoid race conditions
+      Resource   = ["collection/${local.collection_name}"]
       Permission = [
         "aoss:CreateCollectionItems",
         "aoss:DeleteCollectionItems",
@@ -83,8 +84,8 @@ resource "aws_opensearchserverless_access_policy" "data_access" {
       ]
     }, {
       ResourceType = "index"
-      Resource = ["index/${aws_opensearchserverless_collection.search_collection.name}/*"]
-      Permission = [
+      Resource     = ["index/${local.collection_name}/*"]
+      Permission   = [
         "aoss:CreateIndex",
         "aoss:DeleteIndex",
         "aoss:UpdateIndex",
@@ -99,7 +100,7 @@ resource "aws_opensearchserverless_access_policy" "data_access" {
 
 # --- 4. IAM Role for Lambda ---
 resource "aws_iam_role" "lambda_exec" {
-  name = "summarizer_lambda_role_v3" # Renamed to avoid conflicts
+  name = "summarizer_lambda_role_v3"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -119,16 +120,25 @@ resource "aws_iam_role_policy" "lambda_policy" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
+      # 1. Allow Access to S3
       {
         Action   = ["s3:GetObject"]
         Effect   = "Allow"
         Resource = "${aws_s3_bucket.doc_bucket.arn}/*"
       },
+      # 2. Allow Access to Bedrock (Claude 3 Sonnet)
       {
         Action   = ["bedrock:InvokeModel"]
         Effect   = "Allow"
         Resource = "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0"
       },
+      # 3. Allow Access to OpenSearch Serverless API (CRITICAL FIX)
+      {
+        Action   = ["aoss:APIAccessAll"]
+        Effect   = "Allow"
+        Resource = "*" 
+      },
+      # 4. Allow Logging
       {
         Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
         Effect   = "Allow"
@@ -141,7 +151,7 @@ resource "aws_iam_role_policy" "lambda_policy" {
 # --- 5. Lambda Function ---
 data "archive_file" "lambda_zip" {
   type        = "zip"
-  source_dir  = "../src"
+  source_dir  = "../src" # Ensure this folder exists locally!
   output_path = "lambda_function.zip"
 }
 
@@ -154,11 +164,12 @@ resource "aws_lambda_function" "summarizer" {
   timeout          = 60
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
   
-  # FIX: Limit concurrency to 1 to prevent "Too Many Tokens" errors
+  # Limit concurrency to prevent Bedrock throttling or "Too Many Tokens"
   reserved_concurrent_executions = 1
 
   environment {
     variables = {
+      # Pass the endpoint without the https:// prefix if your code expects it that way
       OPENSEARCH_HOST = replace(aws_opensearchserverless_collection.search_collection.collection_endpoint, "https://", "")
     }
   }
@@ -188,4 +199,8 @@ resource "aws_s3_bucket_notification" "bucket_notification" {
 # --- 7. Output ---
 output "s3_bucket_name" {
   value = aws_s3_bucket.doc_bucket.id
+}
+
+output "opensearch_endpoint" {
+  value = aws_opensearchserverless_collection.search_collection.collection_endpoint
 }
